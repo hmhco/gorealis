@@ -20,6 +20,7 @@ import (
 	"log"
 	"strings"
 	"time"
+	"os"
 
 	realis "github.com/paypal/gorealis"
 	"github.com/paypal/gorealis/gen-go/apache/aurora"
@@ -287,8 +288,8 @@ func main() {
 			log.Fatal(err)
 		}
 
-		jobUpdateKey := response.JobUpdateKey(resp)
-		monitor.JobUpdate(*jobUpdateKey, 5, 500)
+        jobUpdateKey := response.JobUpdateKey(resp)
+        monitor.JobUpdate(*jobUpdateKey, 5, 3600)
 
 	case "pauseJobUpdate":
 		resp, err := r.PauseJobUpdate(&aurora.JobUpdateKey{
