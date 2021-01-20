@@ -17,14 +17,17 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
-	"strings"
-	"time"
-	"os"
-
 	realis "github.com/paypal/gorealis"
 	"github.com/paypal/gorealis/gen-go/apache/aurora"
 	"github.com/paypal/gorealis/response"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+	"log"
+	"math"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
 )
 
 var cmd, executor, url, clustersConfig, clusterName, updateId, username, password, zkUrl, hostList, role, name, stage string
@@ -77,6 +80,36 @@ func init() {
 			log.Fatalln(err)
 		}
 	}
+}
+
+type ExecutorConfig string
+
+type MemoryConfig struct {
+	MinMemory, MaxMemory int64
+}
+
+func (config ExecutorConfig) updateCmdline(memory MemoryConfig) ExecutorConfig{
+	configVal := string(config)
+	cmdline := gjson.Get(configVal, "task.processes.0.cmdline")
+	if cmdline.String() != "" {
+		switch {
+		case strings.Contains(strings.ToLower(cmdline.String()),"java"):
+			fmt.Println("DETECTED JAVA APPLICATION :: Modifying the cmdline for Java")
+			remax := regexp.MustCompile("(?i)-Xmx(.*?)m")
+			remin := regexp.MustCompile("(?i)-Xms(.*?)m")
+			fmt.Println("Existing Xmx: ", remax.FindStringSubmatch(cmdline.String())[1] , " Xms:", remin.FindStringSubmatch(cmdline.String())[1])
+			fmt.Println("Updating Xmx: ", memory.MaxMemory , " Xms:", memory.MinMemory)
+			modCmdLine := remax.ReplaceAllString(cmdline.String(), "-Xmx"+strconv.Itoa(int(memory.MaxMemory))+"m")
+			modCmdLine = remin.ReplaceAllString(modCmdLine,"-Xms"+strconv.Itoa(int(memory.MinMemory))+"m")
+			configVal,_ = sjson.Set(configVal, "task.processes.0.cmdline", modCmdLine)
+			break
+		default:
+			fmt.Println("SKIPPING CMDLINE UPDATE")
+		}
+	}else{
+		fmt.Println("SKIPPING : key cmdline is not found in processes")
+	}
+	return ExecutorConfig(configVal)
 }
 
 func main() {
@@ -254,9 +287,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-
 		currInstances := int32(len(live))
-
 		taskConfig, err := r.FetchTaskConfig(aurora.InstanceKey{
 			JobKey:     job.JobKey(),
 			InstanceId: live[0],
@@ -264,8 +295,12 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		executorConf := ExecutorConfig(taskConfig.ExecutorConfig.GetData())
+		memValues := MemoryConfig{int64(math.Floor(float64(ram) * 0.2)) , int64(math.Floor(float64(ram) * 0.8))}
+		executorConf = executorConf.updateCmdline(memValues)
 		updateJob := realis.NewDefaultUpdateJob(taskConfig)
 		updateJob.InstanceCount(currInstances)
+		updateJob.ExecutorData(string(executorConf))
 		fmt.Printf("Updating %s/%s/%s\n", role, stage, name)
 
 		if ram != -1 {
@@ -287,9 +322,15 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-
-        jobUpdateKey := response.JobUpdateKey(resp)
-        monitor.JobUpdate(*jobUpdateKey, 5, 3600)
+		updateJobDetails := resp.GetDetails()
+		if len(updateJobDetails) > 0 {
+			fmt.Println("ERROR :: ",updateJobDetails[0].Message)
+			fmt.Println("QUITTING !!")
+		}else{
+			fmt.Println("TRIGGERED JOB UPDATE SUCCESSFULLY")
+			jobUpdateKey := response.JobUpdateKey(resp)
+			monitor.JobUpdate(*jobUpdateKey, 5, 3600)
+		}
 
 	case "pauseJobUpdate":
 		resp, err := r.PauseJobUpdate(&aurora.JobUpdateKey{
