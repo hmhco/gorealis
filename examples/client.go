@@ -17,17 +17,19 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"strings"
 	"time"
+	"os"
 
 	realis "github.com/paypal/gorealis"
 	"github.com/paypal/gorealis/gen-go/apache/aurora"
 	"github.com/paypal/gorealis/response"
 )
 
-var cmd, executor, url, clustersConfig, clusterName, updateId, username, password, zkUrl, hostList, role string
+var cmd, executor, url, clustersConfig, clusterName, updateId, username, password, zkUrl, hostList, role, name, stage string
+var cpu float64
+var ram, disk int64
 var caCertsPath string
 var clientKey, clientCert string
 
@@ -48,6 +50,11 @@ func init() {
 	flag.StringVar(&caCertsPath, "caCertsPath", "", "Path to CA certs on local machine.")
 	flag.StringVar(&clientCert, "clientCert", "", "Client certificate to use to connect to Aurora.")
 	flag.StringVar(&clientKey, "clientKey", "", "Client private key to use to connect to Aurora.")
+	flag.StringVar(&name, "name", "", "Name of Aurora job for job specific commands")
+	flag.StringVar(&stage, "stage", "", "Stage of Aurora job for job specific commands")
+	flag.Float64Var(&cpu, "cpu", -1, "Number of CPU cores to apply to job during update")
+	flag.Int64Var(&ram, "ram", -1, "Amount of RAM(GB) to apply to job during update")
+	flag.Int64Var(&disk, "disk", -1, "Amount of RAM(GB) to apply to job during update")
 
 	flag.Parse()
 
@@ -116,38 +123,17 @@ func main() {
 
 	switch executor {
 	case "thermos":
-		payload, err := ioutil.ReadFile("examples/thermos_payload.json")
-		if err != nil {
-			log.Fatalln("Error reading json config file: ", err)
-		}
-
 		job = realis.NewJob().
-			Environment("prod").
-			Role("vagrant").
-			Name("hello_world_from_gorealis").
+			Environment(stage).
+			Role(role).
+			Name(name).
 			ExecutorName(aurora.AURORA_EXECUTOR_NAME).
-			ExecutorData(string(payload)).
-			CPU(1).
-			RAM(64).
-			Disk(100).
+			CPU(cpu).
+			RAM(ram).
+			Disk(disk).
 			IsService(true).
 			InstanceCount(1).
 			AddPorts(1)
-	case "compose":
-		job = realis.NewJob().
-			Environment("prod").
-			Role("vagrant").
-			Name("docker-compose-test").
-			ExecutorName("docker-compose-executor").
-			ExecutorData("{}").
-			CPU(0.25).
-			RAM(512).
-			Disk(100).
-			IsService(true).
-			InstanceCount(1).
-			AddPorts(4).
-			AddLabel("fileName", "sample-app/docker-compose.yml").
-			AddURIs(true, true, "https://github.com/mesos/docker-compose-executor/releases/download/0.1.0/sample-app.tar.gz")
 	case "none":
 		job = realis.NewJob().
 			Environment("prod").
@@ -164,96 +150,6 @@ func main() {
 	}
 
 	switch cmd {
-	case "create":
-		fmt.Println("Creating job")
-		resp, err := r.CreateJob(job)
-		if err != nil {
-			log.Fatalln(err)
-		}
-		fmt.Println(resp.String())
-
-		if ok, mErr := monitor.Instances(job.JobKey(), job.GetInstanceCount(), 5, 50); !ok || mErr != nil {
-			_, err := r.KillJob(job.JobKey())
-			if err != nil {
-				log.Fatalln(err)
-			}
-			log.Fatalf("ok: %v\n err: %v", ok, mErr)
-		}
-
-	case "createService":
-		// Create a service with three instances using the update API instead of the createJob API
-		fmt.Println("Creating service")
-		settings := realis.NewUpdateSettings()
-		job.InstanceCount(3)
-		resp, result, err := r.CreateService(job, settings)
-		if err != nil {
-			log.Println("error: ", err)
-			log.Fatal("response: ", resp.String())
-		}
-		fmt.Println(result.String())
-
-		if ok, mErr := monitor.JobUpdate(*result.GetKey(), 5, 180); !ok || mErr != nil {
-			_, err := r.AbortJobUpdate(*result.GetKey(), "Monitor timed out")
-			_, err = r.KillJob(job.JobKey())
-			if err != nil {
-				log.Fatal(err)
-			}
-			log.Fatalf("ok: %v\n err: %v", ok, mErr)
-		}
-
-	case "createDocker":
-		fmt.Println("Creating a docker based job")
-		container := realis.NewDockerContainer().Image("python:2.7").AddParameter("network", "host")
-		job.Container(container)
-		resp, err := r.CreateJob(job)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(resp.String())
-
-		if ok, err := monitor.Instances(job.JobKey(), job.GetInstanceCount(), 10, 300); !ok || err != nil {
-			_, err := r.KillJob(job.JobKey())
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-
-	case "createMesosContainer":
-		fmt.Println("Creating a docker based job")
-		container := realis.NewMesosContainer().DockerImage("python", "2.7")
-		job.Container(container)
-		resp, err := r.CreateJob(job)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(resp.String())
-
-		if ok, err := monitor.Instances(job.JobKey(), job.GetInstanceCount(), 10, 300); !ok || err != nil {
-			_, err := r.KillJob(job.JobKey())
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-
-	case "scheduleCron":
-		fmt.Println("Scheduling a Cron job")
-		// Cron config
-		job.CronSchedule("* * * * *")
-		job.IsService(false)
-		resp, err := r.ScheduleCronJob(job)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(resp.String())
-
-	case "startCron":
-		fmt.Println("Starting a Cron job")
-		resp, err := r.StartCronJob(job.JobKey())
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(resp.String())
-
 	case "descheduleCron":
 		fmt.Println("Descheduling a Cron job")
 		resp, err := r.DescheduleCronJob(job.JobKey())
@@ -354,11 +250,13 @@ func main() {
 		fmt.Println(resp.String())
 
 	case "update":
-		fmt.Println("Updating a job with with more RAM and to 5 instances")
 		live, err := r.GetInstanceIds(job.JobKey(), aurora.ACTIVE_STATES)
 		if err != nil {
 			log.Fatal(err)
 		}
+
+		currInstances := int32(len(live))
+
 		taskConfig, err := r.FetchTaskConfig(aurora.InstanceKey{
 			JobKey:     job.JobKey(),
 			InstanceId: live[0],
@@ -367,15 +265,31 @@ func main() {
 			log.Fatal(err)
 		}
 		updateJob := realis.NewDefaultUpdateJob(taskConfig)
-		updateJob.InstanceCount(5).RAM(128)
+		updateJob.InstanceCount(currInstances)
+		fmt.Printf("Updating %s/%s/%s\n", role, stage, name)
+
+		if ram != -1 {
+			fmt.Println("RAM:", ram)
+			updateJob.RAM(ram)
+		}
+
+		if cpu != -1 {
+			fmt.Println("CPU:", cpu)
+			updateJob.CPU(cpu)
+		}
+
+		if disk != -1 {
+			fmt.Println("DISK:", disk)
+			updateJob.Disk(disk)
+		}
 
 		resp, err := r.StartJobUpdate(updateJob, "")
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		jobUpdateKey := response.JobUpdateKey(resp)
-		monitor.JobUpdate(*jobUpdateKey, 5, 500)
+        jobUpdateKey := response.JobUpdateKey(resp)
+        monitor.JobUpdate(*jobUpdateKey, 5, 3600)
 
 	case "pauseJobUpdate":
 		resp, err := r.PauseJobUpdate(&aurora.JobUpdateKey{
