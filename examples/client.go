@@ -288,48 +288,53 @@ func main() {
 			log.Fatal(err)
 		}
 		currInstances := int32(len(live))
-		taskConfig, err := r.FetchTaskConfig(aurora.InstanceKey{
-			JobKey:     job.JobKey(),
-			InstanceId: live[0],
-		})
-		if err != nil {
-			log.Fatal(err)
-		}
-		executorConf := ExecutorConfig(taskConfig.ExecutorConfig.GetData())
-		memValues := MemoryConfig{int64(math.Floor(float64(ram) * 0.2)) , int64(math.Floor(float64(ram) * 0.8))}
-		executorConf = executorConf.updateCmdline(memValues)
-		updateJob := realis.NewDefaultUpdateJob(taskConfig)
-		updateJob.InstanceCount(currInstances)
-		updateJob.ExecutorData(string(executorConf))
-		fmt.Printf("Updating %s/%s/%s\n", role, stage, name)
+		if currInstances > 0 {
+			taskConfig, err := r.FetchTaskConfig(aurora.InstanceKey{
+				JobKey:     job.JobKey(),
+				InstanceId: live[0],
+			})
+			if err != nil {
+				log.Fatal(err)
+			}
+			executorConf := ExecutorConfig(taskConfig.ExecutorConfig.GetData())
+			memValues := MemoryConfig{int64(math.Floor(float64(ram) * 0.2)) , int64(math.Floor(float64(ram) * 0.8))}
+			executorConf = executorConf.updateCmdline(memValues)
+			updateJob := realis.NewDefaultUpdateJob(taskConfig)
+			updateJob.InstanceCount(currInstances)
+			updateJob.ExecutorData(string(executorConf))
+			fmt.Printf("Updating %s/%s/%s\n", role, stage, name)
 
-		if ram != -1 {
-			fmt.Println("RAM:", ram)
-			updateJob.RAM(ram)
-		}
+			if ram != -1 {
+				fmt.Println("RAM:", ram)
+				updateJob.RAM(ram)
+			}
 
-		if cpu != -1 {
-			fmt.Println("CPU:", cpu)
-			updateJob.CPU(cpu)
-		}
+			if cpu != -1 {
+				fmt.Println("CPU:", cpu)
+				updateJob.CPU(cpu)
+			}
 
-		if disk != -1 {
-			fmt.Println("DISK:", disk)
-			updateJob.Disk(disk)
-		}
+			if disk != -1 {
+				fmt.Println("DISK:", disk)
+				updateJob.Disk(disk)
+			}
 
-		resp, err := r.StartJobUpdate(updateJob, "")
-		if err != nil {
-			log.Fatal(err)
-		}
-		updateJobDetails := resp.GetDetails()
-		if len(updateJobDetails) > 0 {
-			fmt.Println("ERROR :: ",updateJobDetails[0].Message)
-			fmt.Println("QUITTING !!")
-		}else{
-			fmt.Println("TRIGGERED JOB UPDATE SUCCESSFULLY")
-			jobUpdateKey := response.JobUpdateKey(resp)
-			monitor.JobUpdate(*jobUpdateKey, 5, 3600)
+			resp, err := r.StartJobUpdate(updateJob, "")
+			if err != nil {
+				log.Fatal(err)
+			}
+			updateJobDetails := resp.GetDetails()
+			if len(updateJobDetails) > 0 {
+				fmt.Println("ERROR :: ",updateJobDetails[0].Message)
+				fmt.Println("QUITTING !!")
+			}else{
+				fmt.Println("TRIGGERED JOB UPDATE SUCCESSFULLY")
+				jobUpdateKey := response.JobUpdateKey(resp)
+				monitor.JobUpdate(*jobUpdateKey, 5, 3600)
+			}
+		}else {
+			fmt.Println("ERROR :: ZERO INSTANCES RUNNING")
+			fmt.Println("SKIPPING RESOURCE UPDATE !!")
 		}
 
 	case "pauseJobUpdate":
