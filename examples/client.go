@@ -95,13 +95,17 @@ func (config ExecutorConfig) updateCmdline(memory MemoryConfig) ExecutorConfig{
 		switch {
 		case strings.Contains(strings.ToLower(cmdline.String()),"java"):
 			fmt.Println("DETECTED JAVA APPLICATION :: Modifying the cmdline for Java")
-			remax := regexp.MustCompile("(?i)-Xmx(.*?)m")
-			remin := regexp.MustCompile("(?i)-Xms(.*?)m")
-			fmt.Println("Existing Xmx: ", remax.FindStringSubmatch(cmdline.String())[1] , " Xms:", remin.FindStringSubmatch(cmdline.String())[1])
-			fmt.Println("Updating Xmx: ", memory.MaxMemory , " Xms:", memory.MinMemory)
-			modCmdLine := remax.ReplaceAllString(cmdline.String(), "-Xmx"+strconv.Itoa(int(memory.MaxMemory))+"m")
-			modCmdLine = remin.ReplaceAllString(modCmdLine,"-Xms"+strconv.Itoa(int(memory.MinMemory))+"m")
-			configVal,_ = sjson.Set(configVal, "task.processes.0.cmdline", modCmdLine)
+			if strings.Contains(strings.ToLower(cmdline.String()),"-xmx") {
+				remax := regexp.MustCompile("(?i)-Xmx(.*?)m")
+				remin := regexp.MustCompile("(?i)-Xms(.*?)m")
+				fmt.Println("Existing Xmx: ", remax.FindStringSubmatch(cmdline.String())[1], " Xms:", remin.FindStringSubmatch(cmdline.String())[1])
+				fmt.Println("Updating Xmx: ", memory.MaxMemory, " Xms:", memory.MinMemory)
+				modCmdLine := remax.ReplaceAllString(cmdline.String(), "-Xmx"+strconv.Itoa(int(memory.MaxMemory))+"m")
+				modCmdLine = remin.ReplaceAllString(modCmdLine, "-Xms"+strconv.Itoa(int(memory.MinMemory))+"m")
+				configVal, _ = sjson.Set(configVal, "task.processes.0.cmdline", modCmdLine)
+			}else {
+				fmt.Println("NO JAVA XMX OR XMS VALUE DETECTED :: Not modifying the cmdline for Java")
+			}
 			break
 		default:
 			fmt.Println("SKIPPING CMDLINE UPDATE")
@@ -296,16 +300,17 @@ func main() {
 			if err != nil {
 				log.Fatal(err)
 			}
-			executorConf := ExecutorConfig(taskConfig.ExecutorConfig.GetData())
-			memValues := MemoryConfig{int64(math.Floor(float64(ram) * 0.2)) , int64(math.Floor(float64(ram) * 0.8))}
-			executorConf = executorConf.updateCmdline(memValues)
+
 			updateJob := realis.NewDefaultUpdateJob(taskConfig)
 			updateJob.InstanceCount(currInstances)
-			updateJob.ExecutorData(string(executorConf))
-			fmt.Printf("Updating %s/%s/%s\n", role, stage, name)
 
 			if ram != -1 {
 				fmt.Println("RAM:", ram)
+				executorConf := ExecutorConfig(taskConfig.ExecutorConfig.GetData())
+				memValues := MemoryConfig{int64(math.Floor(float64(ram) * 0.2)) , int64(math.Floor(float64(ram) * 0.8))}
+				executorConf = executorConf.updateCmdline(memValues)
+				updateJob.ExecutorData(string(executorConf))
+				fmt.Printf("Updating %s/%s/%s\n", role, stage, name)
 				updateJob.RAM(ram)
 			}
 
