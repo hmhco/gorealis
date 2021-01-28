@@ -90,24 +90,35 @@ type MemoryConfig struct {
 
 func (config ExecutorConfig) updateCmdline(memory MemoryConfig) ExecutorConfig{
 	configVal := string(config)
-	cmdline := gjson.Get(configVal, "task.processes.0.cmdline")
-	if cmdline.String() != "" {
-		switch {
-		case strings.Contains(strings.ToLower(cmdline.String()),"java"):
-			fmt.Println("DETECTED JAVA APPLICATION :: Modifying the cmdline for Java")
-			remax := regexp.MustCompile("(?i)-Xmx(.*?)m")
-			remin := regexp.MustCompile("(?i)-Xms(.*?)m")
-			fmt.Println("Existing Xmx: ", remax.FindStringSubmatch(cmdline.String())[1] , " Xms:", remin.FindStringSubmatch(cmdline.String())[1])
-			fmt.Println("Updating Xmx: ", memory.MaxMemory , " Xms:", memory.MinMemory)
-			modCmdLine := remax.ReplaceAllString(cmdline.String(), "-Xmx"+strconv.Itoa(int(memory.MaxMemory))+"m")
-			modCmdLine = remin.ReplaceAllString(modCmdLine,"-Xms"+strconv.Itoa(int(memory.MinMemory))+"m")
-			configVal,_ = sjson.Set(configVal, "task.processes.0.cmdline", modCmdLine)
-			break
-		default:
-			fmt.Println("SKIPPING CMDLINE UPDATE")
+	processList := gjson.Get(configVal, "task.processes")
+	findCmdline := regexp.MustCompile("cmdline")
+	cmdlineCount := len(findCmdline.FindAllStringIndex(processList.String(), -1))
+	fmt.Println("Total processes count in task - ",cmdlineCount)
+	for cmdLineItr:=0; cmdLineItr < cmdlineCount; cmdLineItr++ {
+		cmdCount := strconv.Itoa(cmdLineItr)
+		cmdline := gjson.Get(configVal, "task.processes."+cmdCount+".cmdline")
+		if cmdline.String() != "" {
+			switch {
+			case strings.Contains(strings.ToLower(cmdline.String()),"java"):
+				fmt.Println("Process ["+cmdCount+"] - DETECTED JAVA APPLICATION :: Modifying the cmdline for Java")
+				if strings.Contains(strings.ToLower(cmdline.String()),"-xmx") {
+					remax := regexp.MustCompile("(?i)-Xmx(.*?)m")
+					remin := regexp.MustCompile("(?i)-Xms(.*?)m")
+					fmt.Println("Process ["+cmdCount+"] - Existing Xmx: ", remax.FindStringSubmatch(cmdline.String())[1] , " Xms:", remin.FindStringSubmatch(cmdline.String())[1])
+					fmt.Println("Process ["+cmdCount+"] - Updating Xmx: ", memory.MaxMemory , " Xms:", memory.MinMemory)
+					modCmdLine := remax.ReplaceAllString(cmdline.String(), "-Xmx"+strconv.Itoa(int(memory.MaxMemory))+"m")
+					modCmdLine = remin.ReplaceAllString(modCmdLine,"-Xms"+strconv.Itoa(int(memory.MinMemory))+"m")
+					configVal,_ = sjson.Set(configVal, "task.processes."+cmdCount+".cmdline", modCmdLine)
+				}else {
+					fmt.Println("Process ["+cmdCount+"] - NO JAVA XMX OR XMS VALUE DETECTED :: Not modifying the cmdline for Java")
+				}
+				break
+			default:
+				fmt.Println("Process ["+cmdCount+"] - SKIPPING CMDLINE UPDATE FOR PROCESS")
+			}
+		}else{
+			fmt.Println("Process ["+cmdCount+"] - SKIPPING : key cmdline is not found in processes")
 		}
-	}else{
-		fmt.Println("SKIPPING : key cmdline is not found in processes")
 	}
 	return ExecutorConfig(configVal)
 }
@@ -296,16 +307,17 @@ func main() {
 			if err != nil {
 				log.Fatal(err)
 			}
-			executorConf := ExecutorConfig(taskConfig.ExecutorConfig.GetData())
-			memValues := MemoryConfig{int64(math.Floor(float64(ram) * 0.2)) , int64(math.Floor(float64(ram) * 0.8))}
-			executorConf = executorConf.updateCmdline(memValues)
+
 			updateJob := realis.NewDefaultUpdateJob(taskConfig)
 			updateJob.InstanceCount(currInstances)
-			updateJob.ExecutorData(string(executorConf))
-			fmt.Printf("Updating %s/%s/%s\n", role, stage, name)
 
 			if ram != -1 {
 				fmt.Println("RAM:", ram)
+				executorConf := ExecutorConfig(taskConfig.ExecutorConfig.GetData())
+				memValues := MemoryConfig{int64(math.Floor(float64(ram) * 0.2)) , int64(math.Floor(float64(ram) * 0.8))}
+				executorConf = executorConf.updateCmdline(memValues)
+				updateJob.ExecutorData(string(executorConf))
+				fmt.Printf("Updating %s/%s/%s\n", role, stage, name)
 				updateJob.RAM(ram)
 			}
 
