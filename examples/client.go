@@ -16,7 +16,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	realis "github.com/paypal/gorealis"
 	"github.com/paypal/gorealis/gen-go/apache/aurora"
 	"github.com/paypal/gorealis/response"
@@ -24,18 +23,22 @@ import (
 	"github.com/tidwall/sjson"
 	"log"
 	"math"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
 
+var clientLogger = LevelLogger{
+	logger: log.New(os.Stdout, "client: ", log.Ltime|log.Ldate|log.LUTC),
+	}
 var cmd, executor, url, clustersConfig, clusterName, updateId, username, password, zkUrl, hostList, role, name, stage string
 var cpu float64
 var ram, disk int64
 var caCertsPath string
 var clientKey, clientCert string
-
+var debug bool
 var ConnectionTimeout = 20000
 
 func init() {
@@ -58,6 +61,7 @@ func init() {
 	flag.Float64Var(&cpu, "cpu", -1, "Number of CPU cores to apply to job during update")
 	flag.Int64Var(&ram, "ram", -1, "Amount of RAM(GB) to apply to job during update")
 	flag.Int64Var(&disk, "disk", -1, "Amount of RAM(GB) to apply to job during update")
+	flag.BoolVar(&debug, "debug", false, "Control logging in script with debug mode")
 
 	flag.Parse()
 
@@ -67,17 +71,17 @@ func init() {
 	if clustersConfig != "" {
 		clusters, err := realis.LoadClusters(clustersConfig)
 		if err != nil {
-			log.Fatalln(err)
+			clientLogger.fatalPrintln(err)
 		}
 
 		cluster, ok := clusters[clusterName]
 		if !ok {
-			log.Fatalf("Cluster %s doesn't exist in the file provided\n", clusterName)
+			clientLogger.fatalPrintf("Cluster %s doesn't exist in the file provided\n", clusterName)
 		}
 
 		url, err = realis.LeaderFromZK(cluster)
 		if err != nil {
-			log.Fatalln(err)
+			clientLogger.fatalPrintln(err)
 		}
 	}
 }
@@ -90,28 +94,35 @@ type MemoryConfig struct {
 
 func (config ExecutorConfig) updateCmdline(memory MemoryConfig) ExecutorConfig{
 	configVal := string(config)
-	cmdline := gjson.Get(configVal, "task.processes.0.cmdline")
-	if cmdline.String() != "" {
-		switch {
-		case strings.Contains(strings.ToLower(cmdline.String()),"java"):
-			fmt.Println("DETECTED JAVA APPLICATION :: Modifying the cmdline for Java")
-			if strings.Contains(strings.ToLower(cmdline.String()),"-xmx") {
-				remax := regexp.MustCompile("(?i)-Xmx(.*?)m")
-				remin := regexp.MustCompile("(?i)-Xms(.*?)m")
-				fmt.Println("Existing Xmx: ", remax.FindStringSubmatch(cmdline.String())[1], " Xms:", remin.FindStringSubmatch(cmdline.String())[1])
-				fmt.Println("Updating Xmx: ", memory.MaxMemory, " Xms:", memory.MinMemory)
-				modCmdLine := remax.ReplaceAllString(cmdline.String(), "-Xmx"+strconv.Itoa(int(memory.MaxMemory))+"m")
-				modCmdLine = remin.ReplaceAllString(modCmdLine, "-Xms"+strconv.Itoa(int(memory.MinMemory))+"m")
-				configVal, _ = sjson.Set(configVal, "task.processes.0.cmdline", modCmdLine)
-			}else {
-				fmt.Println("NO JAVA XMX OR XMS VALUE DETECTED :: Not modifying the cmdline for Java")
+	processList := gjson.Get(configVal, "task.processes")
+	findCmdline := regexp.MustCompile("cmdline")
+	cmdlineCount := len(findCmdline.FindAllStringIndex(processList.String(), -1))
+	clientLogger.debugPrintln("Total processes count in task - ",cmdlineCount)
+	for cmdLineItr:=0; cmdLineItr < cmdlineCount; cmdLineItr++ {
+		cmdCount := strconv.Itoa(cmdLineItr)
+		cmdline := gjson.Get(configVal, "task.processes."+cmdCount+".cmdline")
+		if cmdline.String() != "" {
+			switch {
+			case strings.Contains(strings.ToLower(cmdline.String()),"java"):
+				clientLogger.debugPrintln("Process ["+cmdCount+"] - DETECTED JAVA APPLICATION :: Modifying the cmdline for Java")
+				if strings.Contains(strings.ToLower(cmdline.String()),"-xmx") {
+					remax := regexp.MustCompile("(?i)-Xmx(.*?)m")
+					remin := regexp.MustCompile("(?i)-Xms(.*?)m")
+					clientLogger.debugPrintln("Process ["+cmdCount+"] - Existing Xmx: ", remax.FindStringSubmatch(cmdline.String())[1] , " Xms:", remin.FindStringSubmatch(cmdline.String())[1])
+					clientLogger.debugPrintln("Process ["+cmdCount+"] - Updating Xmx: ", memory.MaxMemory , " Xms:", memory.MinMemory)
+					modCmdLine := remax.ReplaceAllString(cmdline.String(), "-Xmx"+strconv.Itoa(int(memory.MaxMemory))+"m")
+					modCmdLine = remin.ReplaceAllString(modCmdLine,"-Xms"+strconv.Itoa(int(memory.MinMemory))+"m")
+					configVal,_ = sjson.Set(configVal, "task.processes."+cmdCount+".cmdline", modCmdLine)
+				}else {
+					clientLogger.debugPrintln("Process ["+cmdCount+"] - NO JAVA XMX OR XMS VALUE DETECTED :: Not modifying the cmdline for Java")
+				}
+				break
+			default:
+				clientLogger.debugPrintln("Process ["+cmdCount+"] - SKIPPING CMDLINE UPDATE FOR PROCESS")
 			}
-			break
-		default:
-			fmt.Println("SKIPPING CMDLINE UPDATE")
+		}else{
+			clientLogger.debugPrintln("Process ["+cmdCount+"] - SKIPPING : key cmdline is not found in processes")
 		}
-	}else{
-		fmt.Println("SKIPPING : key cmdline is not found in processes")
 	}
 	return ExecutorConfig(configVal)
 }
@@ -133,11 +144,16 @@ func main() {
 			Factor:   2.0,
 			Jitter:   0.1,
 		}),
-		realis.Debug(),
+	}
+
+	if debug {
+		clientLogger.Println("DEBUG MODE : ON")
+		clientLogger.EnableDebug(true)
+		clientOptions = append(clientOptions, realis.Debug())
 	}
 
 	if zkUrl != "" {
-		fmt.Println("zkUrl: ", zkUrl)
+		clientLogger.Println("zkUrl: ", zkUrl)
 		clientOptions = append(clientOptions, realis.ZKUrl(zkUrl))
 	} else {
 		clientOptions = append(clientOptions, realis.SchedulerUrl(url))
@@ -153,7 +169,7 @@ func main() {
 
 	r, err = realis.NewRealisClient(clientOptions...)
 	if err != nil {
-		log.Fatalln(err)
+		clientLogger.fatalPrintln(err)
 	}
 	monitor = &realis.Monitor{Client: r}
 	defer r.Close()
@@ -183,71 +199,71 @@ func main() {
 			InstanceCount(1).
 			AddPorts(1)
 	default:
-		log.Fatalln("Only thermos, compose, and none are supported for now")
+		clientLogger.fatalPrintln("Only thermos, compose, and none are supported for now")
 	}
 
 	switch cmd {
 	case "descheduleCron":
-		fmt.Println("Descheduling a Cron job")
+		clientLogger.Println("Descheduling a Cron job")
 		resp, err := r.DescheduleCronJob(job.JobKey())
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
-		fmt.Println(resp.String())
+		clientLogger.Println(resp.String())
 
 	case "kill":
-		fmt.Println("Killing job")
+		clientLogger.Println("Killing job")
 
 		resp, err := r.KillJob(job.JobKey())
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
 
 		if ok, err := monitor.Instances(job.JobKey(), 0, 5, 50); !ok || err != nil {
-			log.Fatal("Unable to kill all instances of job")
+			clientLogger.fatalPrint("Unable to kill all instances of job")
 		}
-		fmt.Println(resp.String())
+		clientLogger.Println(resp.String())
 
 	case "restart":
-		fmt.Println("Restarting job")
+		clientLogger.Println("Restarting job")
 		resp, err := r.RestartJob(job.JobKey())
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
 
-		fmt.Println(resp.String())
+		clientLogger.Println(resp.String())
 
 	case "liveCount":
-		fmt.Println("Getting instance count")
+		clientLogger.Println("Getting instance count")
 
 		live, err := r.GetInstanceIds(job.JobKey(), aurora.LIVE_STATES)
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
 
-		fmt.Printf("Live instances: %+v\n", live)
+		clientLogger.Printf("Live instances: %+v\n", live)
 
 	case "activeCount":
-		fmt.Println("Getting instance count")
+		clientLogger.Println("Getting instance count")
 
 		live, err := r.GetInstanceIds(job.JobKey(), aurora.ACTIVE_STATES)
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
 
-		fmt.Println("Number of live instances: ", len(live))
+		clientLogger.Println("Number of live instances: ", len(live))
 
 	case "flexUp":
-		fmt.Println("Flexing up job")
+		clientLogger.Println("Flexing up job")
 
 		numOfInstances := int32(4)
 
 		live, err := r.GetInstanceIds(job.JobKey(), aurora.ACTIVE_STATES)
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
 		currInstances := int32(len(live))
-		fmt.Println("Current num of instances: ", currInstances)
+		clientLogger.debugPrintln("Current num of instances: ", currInstances)
 		resp, err := r.AddInstances(aurora.InstanceKey{
 			JobKey:     job.JobKey(),
 			InstanceId: live[0],
@@ -255,41 +271,41 @@ func main() {
 			numOfInstances)
 
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
 
 		if ok, err := monitor.Instances(job.JobKey(), currInstances+numOfInstances, 5, 50); !ok || err != nil {
-			fmt.Println("Flexing up failed")
+			clientLogger.errorPrintln("Flexing up failed")
 		}
-		fmt.Println(resp.String())
+		clientLogger.Println(resp.String())
 
 	case "flexDown":
-		fmt.Println("Flexing down job")
+		clientLogger.Println("Flexing down job")
 
 		numOfInstances := int32(2)
 
 		live, err := r.GetInstanceIds(job.JobKey(), aurora.ACTIVE_STATES)
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
 		currInstances := int32(len(live))
-		fmt.Println("Current num of instances: ", currInstances)
+		clientLogger.Println("Current num of instances: ", currInstances)
 
 		resp, err := r.RemoveInstances(job.JobKey(), numOfInstances)
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
 
 		if ok, err := monitor.Instances(job.JobKey(), currInstances-numOfInstances, 5, 100); !ok || err != nil {
-			fmt.Println("flexDown failed")
+			clientLogger.errorPrintln("flexDown failed")
 		}
 
-		fmt.Println(resp.String())
+		clientLogger.Println(resp.String())
 
 	case "update":
 		live, err := r.GetInstanceIds(job.JobKey(), aurora.ACTIVE_STATES)
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.zfatalPrint(err)
 		}
 		currInstances := int32(len(live))
 		if currInstances > 0 {
@@ -298,48 +314,48 @@ func main() {
 				InstanceId: live[0],
 			})
 			if err != nil {
-				log.Fatal(err)
+				clientLogger.zfatalPrint(err)
 			}
 
 			updateJob := realis.NewDefaultUpdateJob(taskConfig)
 			updateJob.InstanceCount(currInstances)
 
 			if ram != -1 {
-				fmt.Println("RAM:", ram)
+				clientLogger.debugPrintln("RAM:", ram)
 				executorConf := ExecutorConfig(taskConfig.ExecutorConfig.GetData())
 				memValues := MemoryConfig{int64(math.Floor(float64(ram) * 0.2)) , int64(math.Floor(float64(ram) * 0.8))}
 				executorConf = executorConf.updateCmdline(memValues)
 				updateJob.ExecutorData(string(executorConf))
-				fmt.Printf("Updating %s/%s/%s\n", role, stage, name)
+				clientLogger.Printf("Updating %s/%s/%s\n", role, stage, name)
 				updateJob.RAM(ram)
 			}
 
 			if cpu != -1 {
-				fmt.Println("CPU:", cpu)
+				clientLogger.debugPrintln("CPU:", cpu)
 				updateJob.CPU(cpu)
 			}
 
 			if disk != -1 {
-				fmt.Println("DISK:", disk)
+				clientLogger.debugPrintln("DISK:", disk)
 				updateJob.Disk(disk)
 			}
 
 			resp, err := r.StartJobUpdate(updateJob, "")
 			if err != nil {
-				log.Fatal(err)
+				clientLogger.zfatalPrint(err)
 			}
 			updateJobDetails := resp.GetDetails()
 			if len(updateJobDetails) > 0 {
-				fmt.Println("ERROR :: ",updateJobDetails[0].Message)
-				fmt.Println("QUITTING !!")
+				clientLogger.errorPrintln(updateJobDetails[0].Message)
+				clientLogger.errorPrintln("QUITTING !!")
 			}else{
-				fmt.Println("TRIGGERED JOB UPDATE SUCCESSFULLY")
+				clientLogger.Println("TRIGGERED JOB UPDATE SUCCESSFULLY")
 				jobUpdateKey := response.JobUpdateKey(resp)
 				monitor.JobUpdate(*jobUpdateKey, 5, 3600)
 			}
 		}else {
-			fmt.Println("ERROR :: ZERO INSTANCES RUNNING")
-			fmt.Println("SKIPPING RESOURCE UPDATE !!")
+			clientLogger.errorPrintln("ZERO INSTANCES RUNNING")
+			clientLogger.Println("SKIPPING RESOURCE UPDATE !!")
 		}
 
 	case "pauseJobUpdate":
@@ -349,9 +365,9 @@ func main() {
 		}, "")
 
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
-		fmt.Println("PauseJobUpdate response: ", resp.String())
+		clientLogger.Println("PauseJobUpdate response: ", resp.String())
 
 	case "resumeJobUpdate":
 		resp, err := r.ResumeJobUpdate(&aurora.JobUpdateKey{
@@ -360,9 +376,9 @@ func main() {
 		}, "")
 
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
-		fmt.Println("ResumeJobUpdate response: ", resp.String())
+		clientLogger.Println("ResumeJobUpdate response: ", resp.String())
 
 	case "pulseJobUpdate":
 		resp, err := r.PulseJobUpdate(&aurora.JobUpdateKey{
@@ -370,10 +386,10 @@ func main() {
 			ID:  updateId,
 		})
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
 
-		fmt.Println("PulseJobUpdate response: ", resp.String())
+		clientLogger.Println("PulseJobUpdate response: ", resp.String())
 
 	case "updateDetails":
 		resp, err := r.JobUpdateDetails(aurora.JobUpdateQuery{
@@ -385,13 +401,13 @@ func main() {
 		})
 
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
 
-		fmt.Println(response.JobUpdateDetails(resp))
+		clientLogger.Println(response.JobUpdateDetails(resp))
 
 	case "abortUpdate":
-		fmt.Println("Abort update")
+		clientLogger.Println("Abort update")
 		resp, err := r.AbortJobUpdate(aurora.JobUpdateKey{
 			Job: job.JobKey(),
 			ID:  updateId,
@@ -399,12 +415,12 @@ func main() {
 			"")
 
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
-		fmt.Println(resp.String())
+		clientLogger.Println(resp.String())
 
 	case "rollbackUpdate":
-		fmt.Println("Abort update")
+		clientLogger.Println("Abort update")
 		resp, err := r.RollbackJobUpdate(aurora.JobUpdateKey{
 			Job: job.JobKey(),
 			ID:  updateId,
@@ -412,15 +428,15 @@ func main() {
 			"")
 
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
-		fmt.Println(resp.String())
+		clientLogger.Println(resp.String())
 
 	case "taskConfig":
-		fmt.Println("Getting job info")
+		clientLogger.Println("Getting job info")
 		live, err := r.GetInstanceIds(job.JobKey(), aurora.ACTIVE_STATES)
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 
 		}
 		config, err := r.FetchTaskConfig(aurora.InstanceKey{
@@ -429,26 +445,26 @@ func main() {
 		})
 
 		if err != nil {
-			log.Fatal(err)
+			clientLogger.fatalPrint(err)
 		}
 
-		log.Println(config.String())
+		clientLogger.Println(config.String())
 
 	case "updatesummary":
-		fmt.Println("Getting job update summary")
+		clientLogger.Println("Getting job update summary")
 		jobquery := &aurora.JobUpdateQuery{
 			Role:   &job.JobKey().Role,
 			JobKey: job.JobKey(),
 		}
 		updatesummary, err := r.GetJobUpdateSummaries(jobquery)
 		if err != nil {
-			log.Fatalf("error while getting update summary: %v", err)
+			clientLogger.fatalPrintf("error while getting update summary: %v", err)
 		}
 
-		fmt.Println(updatesummary)
+		clientLogger.Println(updatesummary)
 
 	case "taskStatus":
-		fmt.Println("Getting task status")
+		clientLogger.Println("Getting task status")
 		taskQ := &aurora.TaskQuery{
 			Role:        &job.JobKey().Role,
 			Environment: &job.JobKey().Environment,
@@ -456,14 +472,14 @@ func main() {
 		}
 		tasks, err := r.GetTaskStatus(taskQ)
 		if err != nil {
-			log.Fatalf("error: %+v\n ", err)
+			clientLogger.fatalPrintf("error: %+v\n ", err)
 		}
 
-		fmt.Printf("length: %d\n ", len(tasks))
-		fmt.Printf("tasks: %+v\n", tasks)
+		clientLogger.Printf("length: %d\n ", len(tasks))
+		clientLogger.Printf("tasks: %+v\n", tasks)
 
 	case "tasksWithoutConfig":
-		fmt.Println("Getting task status")
+		clientLogger.Println("Getting task status")
 		taskQ := &aurora.TaskQuery{
 			Role:        &job.JobKey().Role,
 			Environment: &job.JobKey().Environment,
@@ -471,21 +487,21 @@ func main() {
 		}
 		tasks, err := r.GetTasksWithoutConfigs(taskQ)
 		if err != nil {
-			log.Fatalf("error: %+v\n ", err)
+			clientLogger.fatalPrintf("error: %+v\n ", err)
 		}
 
-		fmt.Printf("length: %d\n ", len(tasks))
-		fmt.Printf("tasks: %+v\n", tasks)
+		clientLogger.Printf("length: %d\n ", len(tasks))
+		clientLogger.Printf("tasks: %+v\n", tasks)
 
 	case "drainHosts":
-		fmt.Println("Setting hosts to DRAINING")
+		clientLogger.Println("Setting hosts to DRAINING")
 		if hostList == "" {
-			log.Fatal("No hosts specified to drain")
+			clientLogger.fatalPrint("No hosts specified to drain")
 		}
 		hosts := strings.Split(hostList, ",")
 		_, result, err := r.DrainHosts(hosts...)
 		if err != nil {
-			log.Fatalf("error: %+v\n", err.Error())
+			clientLogger.fatalPrintf("error: %+v\n", err.Error())
 		}
 
 		// Monitor change to DRAINING and DRAINED mode
@@ -497,18 +513,18 @@ func main() {
 		if err != nil {
 			for host, ok := range hostResult {
 				if !ok {
-					fmt.Printf("Host %s did not transtion into desired mode(s)\n", host)
+					clientLogger.Printf("Host %s did not transtion into desired mode(s)\n", host)
 				}
 			}
-			log.Fatalf("error: %+v\n", err.Error())
+			clientLogger.fatalPrintf("error: %+v\n", err.Error())
 		}
 
-		fmt.Print(result.String())
+		clientLogger.Print(result.String())
 
 	case "SLADrainHosts":
-		fmt.Println("Setting hosts to DRAINING using SLA aware draining")
+		clientLogger.Println("Setting hosts to DRAINING using SLA aware draining")
 		if hostList == "" {
-			log.Fatal("No hosts specified to drain")
+			clientLogger.fatalPrint("No hosts specified to drain")
 		}
 		hosts := strings.Split(hostList, ",")
 
@@ -516,7 +532,7 @@ func main() {
 
 		result, err := r.SLADrainHosts(&policy, 30, hosts...)
 		if err != nil {
-			log.Fatalf("error: %+v\n", err.Error())
+			clientLogger.fatalPrintf("error: %+v\n", err.Error())
 		}
 
 		// Monitor change to DRAINING and DRAINED mode
@@ -528,23 +544,23 @@ func main() {
 		if err != nil {
 			for host, ok := range hostResult {
 				if !ok {
-					fmt.Printf("Host %s did not transtion into desired mode(s)\n", host)
+					clientLogger.Printf("Host %s did not transtion into desired mode(s)\n", host)
 				}
 			}
-			log.Fatalf("error: %+v\n", err.Error())
+			clientLogger.fatalPrintf("error: %+v\n", err.Error())
 		}
 
-		fmt.Print(result.String())
+		clientLogger.Print(result.String())
 
 	case "endMaintenance":
-		fmt.Println("Setting hosts to ACTIVE")
+		clientLogger.Println("Setting hosts to ACTIVE")
 		if hostList == "" {
-			log.Fatal("No hosts specified to drain")
+			clientLogger.fatalPrint("No hosts specified to drain")
 		}
 		hosts := strings.Split(hostList, ",")
 		_, result, err := r.EndMaintenance(hosts...)
 		if err != nil {
-			log.Fatalf("error: %+v\n", err.Error())
+			clientLogger.fatalPrintf("error: %+v\n", err.Error())
 		}
 
 		// Monitor change to DRAINING and DRAINED mode
@@ -556,16 +572,16 @@ func main() {
 		if err != nil {
 			for host, ok := range hostResult {
 				if !ok {
-					fmt.Printf("Host %s did not transtion into desired mode(s)\n", host)
+					clientLogger.Printf("Host %s did not transtion into desired mode(s)\n", host)
 				}
 			}
-			log.Fatalf("error: %+v\n", err.Error())
+			clientLogger.fatalPrintf("error: %+v\n", err.Error())
 		}
 
-		fmt.Print(result.String())
+		clientLogger.Print(result.String())
 
 	case "getPendingReasons":
-		fmt.Println("Getting pending reasons")
+		clientLogger.Println("Getting pending reasons")
 		taskQ := &aurora.TaskQuery{
 			Role:        &job.JobKey().Role,
 			Environment: &job.JobKey().Environment,
@@ -573,50 +589,50 @@ func main() {
 		}
 		reasons, err := r.GetPendingReason(taskQ)
 		if err != nil {
-			log.Fatalf("error: %+v\n ", err)
+			clientLogger.fatalPrintf("error: %+v\n ", err)
 		}
 
-		fmt.Printf("length: %d\n ", len(reasons))
-		fmt.Printf("tasks: %+v\n", reasons)
+		clientLogger.Printf("length: %d\n ", len(reasons))
+		clientLogger.Printf("tasks: %+v\n", reasons)
 
 	case "getJobs":
-		fmt.Println("GetJobs...role: ", role)
+		clientLogger.Println("GetJobs...role: ", role)
 		_, result, err := r.GetJobs(role)
 		if err != nil {
-			log.Fatalf("error: %+v\n", err.Error())
+			clientLogger.fatalPrintf("error: %+v\n", err.Error())
 		}
-		fmt.Println("map size: ", len(result.Configs))
-		fmt.Println(result.String())
+		clientLogger.Println("map size: ", len(result.Configs))
+		clientLogger.Println(result.String())
 
 	case "snapshot":
-		fmt.Println("Forcing scheduler to write snapshot to mesos replicated log")
+		clientLogger.Println("Forcing scheduler to write snapshot to mesos replicated log")
 		err := r.Snapshot()
 		if err != nil {
-			log.Fatalf("error: %+v\n", err.Error())
+			clientLogger.fatalPrintf("error: %+v\n", err.Error())
 		}
 
 	case "performBackup":
-		fmt.Println("Writing Backup of Snapshot to file system")
+		clientLogger.Println("Writing Backup of Snapshot to file system")
 		err := r.PerformBackup()
 		if err != nil {
-			log.Fatalf("error: %+v\n", err.Error())
+			clientLogger.fatalPrintf("error: %+v\n", err.Error())
 		}
 
 	case "forceExplicitRecon":
-		fmt.Println("Force an explicit recon")
+		clientLogger.Println("Force an explicit recon")
 		err := r.ForceExplicitTaskReconciliation(nil)
 		if err != nil {
-			log.Fatalf("error: %+v\n", err.Error())
+			clientLogger.fatalPrintf("error: %+v\n", err.Error())
 		}
 
 	case "forceImplicitRecon":
-		fmt.Println("Force an implicit recon")
+		clientLogger.Println("Force an implicit recon")
 		err := r.ForceImplicitTaskReconciliation()
 		if err != nil {
-			log.Fatalf("error: %+v\n", err.Error())
+			clientLogger.fatalPrintf("error: %+v\n", err.Error())
 		}
 
 	default:
-		log.Fatal("Command not supported")
+		clientLogger.fatalPrint("Command not supported")
 	}
 }
