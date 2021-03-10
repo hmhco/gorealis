@@ -105,17 +105,22 @@ func (config ExecutorConfig) updateCmdline(memory MemoryConfig) ExecutorConfig{
 			switch {
 			case strings.Contains(strings.ToLower(cmdline.String()),"java"):
 				clientLogger.debugPrintln("Process ["+cmdCount+"] - DETECTED JAVA APPLICATION :: Modifying the cmdline for Java")
+				modCmdLine := cmdline.String()
 				if strings.Contains(strings.ToLower(cmdline.String()),"-xmx") {
 					remax := regexp.MustCompile("(?i)-Xmx(.*?)m")
-					remin := regexp.MustCompile("(?i)-Xms(.*?)m")
-					clientLogger.debugPrintln("Process ["+cmdCount+"] - Existing Xmx: ", remax.FindStringSubmatch(cmdline.String())[1] , " Xms:", remin.FindStringSubmatch(cmdline.String())[1])
-					clientLogger.debugPrintln("Process ["+cmdCount+"] - Updating Xmx: ", memory.MaxMemory , " Xms:", memory.MinMemory)
-					modCmdLine := remax.ReplaceAllString(cmdline.String(), "-Xmx"+strconv.Itoa(int(memory.MaxMemory))+"m")
-					modCmdLine = remin.ReplaceAllString(modCmdLine,"-Xms"+strconv.Itoa(int(memory.MinMemory))+"m")
-					configVal,_ = sjson.Set(configVal, "task.processes."+cmdCount+".cmdline", modCmdLine)
+					clientLogger.debugPrintln("Process ["+cmdCount+"] - Existing Xmx: ", remax.FindStringSubmatch(cmdline.String())[1], " New Xmx: ", memory.MaxMemory)
+					modCmdLine = remax.ReplaceAllString(modCmdLine, "-Xmx"+strconv.Itoa(int(memory.MaxMemory))+"m")
 				}else {
-					clientLogger.debugPrintln("Process ["+cmdCount+"] - NO JAVA XMX OR XMS VALUE DETECTED :: Not modifying the cmdline for Java")
+					clientLogger.debugPrintln("Process ["+cmdCount+"] - NO JAVA XMX VALUE DETECTED :: Not modifying the cmdline for Java XMX")
 				}
+				if strings.Contains(strings.ToLower(cmdline.String()),"-xms") {
+					remin := regexp.MustCompile("(?i)-Xms(.*?)m")
+					clientLogger.debugPrintln("Process ["+cmdCount+"] - Existing Xms:", remin.FindStringSubmatch(cmdline.String())[1], " New Xms:", memory.MinMemory)
+					modCmdLine = remin.ReplaceAllString(modCmdLine,"-Xms"+strconv.Itoa(int(memory.MinMemory))+"m")
+				}else {
+					clientLogger.debugPrintln("Process ["+cmdCount+"] - NO JAVA XMS VALUE DETECTED :: Not modifying the cmdline for Java XMS")
+				}
+				configVal,_ = sjson.Set(configVal, "task.processes."+cmdCount+".cmdline", modCmdLine)
 				break
 			default:
 				clientLogger.debugPrintln("Process ["+cmdCount+"] - SKIPPING CMDLINE UPDATE FOR PROCESS")
