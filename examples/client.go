@@ -107,15 +107,15 @@ func (config ExecutorConfig) updateCmdline(memory MemoryConfig) ExecutorConfig{
 				clientLogger.debugPrintln("Process ["+cmdCount+"] - DETECTED JAVA APPLICATION :: Modifying the cmdline for Java")
 				modCmdLine := cmdline.String()
 				if strings.Contains(strings.ToLower(cmdline.String()),"-xmx") {
-					remax := regexp.MustCompile("(?i)-Xmx(.*?)m")
-					clientLogger.debugPrintln("Process ["+cmdCount+"] - Existing Xmx: ", remax.FindStringSubmatch(cmdline.String())[1], " New Xmx: ", memory.MaxMemory)
+					remax := regexp.MustCompile("(?i)-Xmx(.*?)(k|m|g)")
+					clientLogger.debugPrintln("Process ["+cmdCount+"] - Existing Xmx: ", remax.FindStringSubmatch(cmdline.String())[1], remax.FindStringSubmatch(cmdline.String())[2]," New Xmx: ", memory.MaxMemory,"m")
 					modCmdLine = remax.ReplaceAllString(modCmdLine, "-Xmx"+strconv.Itoa(int(memory.MaxMemory))+"m")
 				}else {
 					clientLogger.debugPrintln("Process ["+cmdCount+"] - NO JAVA XMX VALUE DETECTED :: Not modifying the cmdline for Java XMX")
 				}
 				if strings.Contains(strings.ToLower(cmdline.String()),"-xms") {
-					remin := regexp.MustCompile("(?i)-Xms(.*?)m")
-					clientLogger.debugPrintln("Process ["+cmdCount+"] - Existing Xms:", remin.FindStringSubmatch(cmdline.String())[1], " New Xms:", memory.MinMemory)
+					remin := regexp.MustCompile("(?i)-Xms(.*?)(k|m|g)")
+					clientLogger.debugPrintln("Process ["+cmdCount+"] - Existing Xms:", remin.FindStringSubmatch(cmdline.String())[1], remin.FindStringSubmatch(cmdline.String())[2], " New Xms:", memory.MinMemory,"m")
 					modCmdLine = remin.ReplaceAllString(modCmdLine,"-Xms"+strconv.Itoa(int(memory.MinMemory))+"m")
 				}else {
 					clientLogger.debugPrintln("Process ["+cmdCount+"] - NO JAVA XMS VALUE DETECTED :: Not modifying the cmdline for Java XMS")
