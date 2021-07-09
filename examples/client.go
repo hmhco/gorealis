@@ -30,6 +30,7 @@ import (
 	"time"
 )
 
+
 var clientLogger = LevelLogger{
 	logger: log.New(os.Stdout, "client: ", log.Ltime|log.Ldate|log.LUTC),
 	}
@@ -40,6 +41,7 @@ var caCertsPath string
 var clientKey, clientCert string
 var debug bool
 var ConnectionTimeout = 20000
+
 
 func init() {
 	flag.StringVar(&cmd, "cmd", "", "Job request type to send to Aurora Scheduler")
@@ -133,7 +135,11 @@ func (config ExecutorConfig) updateCmdline(memory MemoryConfig) ExecutorConfig{
 }
 
 func main() {
-
+	defer func() {
+		if r := recover(); r != nil {
+			clientLogger.Printf("Recovered From Panic Exception: %v\n", r)
+		}
+	}()
 	var job realis.Job
 	var err error
 	var monitor *realis.Monitor
